@@ -86,28 +86,108 @@ else
     SOURCE_IMAGES_DIR="${IMAGES_ONEUI_DIR}"
 fi
 
-# Detect KSU-Next version from submodule tags
-# 'main' and plain 'aosp' branches do not ship KSU-Next
-NO_KSU_BRANCHES=("main" "aosp")
-if [[ " ${NO_KSU_BRANCHES[*]} " == *" ${CURRENT_BRANCH} "* ]]; then
-    KSU_VERSION="none"
-else
-    KSU_VERSION="$(git -C "${KERNEL_ROOT}/KernelSU-Next" describe --tags --abbrev=0 2>/dev/null \
-        || echo 'unknown')"
-fi
+# ─── Detect root solution from current branch ─────────────────────────────────
+#
+# Rootless branches:
+#   main
+#   aosp
+#
+# KernelSU-Next branches:
+#   ksu-next
+#   ksu-next-susfs-aosp
+#   ksu-next-susfs-oneui
+#   ...and other ksu-next* variants
+#
+# ReSukiSU branches:
+#   resukisu-aosp
+#   resukisu-oneui
+#   resukisu-susfs-aosp
+#   resukisu-susfs-oneui
+#
+# KernelSU-Next lives in the "KernelSU-Next" submodule.
+# ReSukiSU lives in the "KernelSU" submodule.
+#
+# Both root solutions use the latest tag returned by:
+#   cd <submodule> && git tag -l
+#
+# The branch name is also used to determine whether SUSFS is enabled.
+ROOT_SOLUTION="none"
+ROOT_SUBMODULE_DIR=""
+ROOT_VERSION="none"
+ROOT_DISPLAY="none"
+HAS_SUSFS=false
 
-# Display string for root solution
-if [[ "$KSU_VERSION" == "none" ]]; then
-    ROOT_DISPLAY="none"
-else
-    ROOT_DISPLAY="KernelSU-Next ${KSU_VERSION}"
+case "$CURRENT_BRANCH" in
+    main|aosp)
+        ROOT_SOLUTION="none"
+        ROOT_VERSION="none"
+        ROOT_DISPLAY="none"
+        ;;
+
+    ksu-next*)
+        ROOT_SOLUTION="KernelSU-Next"
+        ROOT_SUBMODULE_DIR="${KERNEL_ROOT}/KernelSU-Next"
+
+        if [[ "$CURRENT_BRANCH" == *susfs* ]]; then
+            HAS_SUSFS=true
+        fi
+        ;;
+
+    resukisu*)
+        ROOT_SOLUTION="ReSukiSU"
+        ROOT_SUBMODULE_DIR="${KERNEL_ROOT}/KernelSU"
+
+        if [[ "$CURRENT_BRANCH" == *susfs* ]]; then
+            HAS_SUSFS=true
+        fi
+        ;;
+
+    *)
+        warn "Branch '$CURRENT_BRANCH' doesn't match a known root solution — treating it as rootless"
+        ROOT_SOLUTION="none"
+        ROOT_VERSION="none"
+        ROOT_DISPLAY="none"
+        ;;
+esac
+
+# Detect root solution version from submodule tags.
+#
+# The requested behavior is equivalent to:
+#   cd KernelSU
+#   git tag -l
+#
+# and using the latest tag listed by git as the displayed version.
+if [[ "$ROOT_SOLUTION" != "none" ]]; then
+    [[ -d "$ROOT_SUBMODULE_DIR" ]] \
+        || die "${ROOT_SOLUTION} submodule directory not found: ${ROOT_SUBMODULE_DIR}"
+
+    mapfile -t ROOT_TAGS < <(git -C "$ROOT_SUBMODULE_DIR" tag -l)
+
+    if (( ${#ROOT_TAGS[@]} == 0 )); then
+        ROOT_VERSION="unknown"
+        warn "No tags found in ${ROOT_SOLUTION} submodule"
+    else
+        ROOT_VERSION="${ROOT_TAGS[$((${#ROOT_TAGS[@]} - 1))]}"
+    fi
+
+    ROOT_DISPLAY="${ROOT_SOLUTION} ${ROOT_VERSION}"
+
+    if [[ "$HAS_SUSFS" == true ]]; then
+        ROOT_DISPLAY+=" + SUSFS"
+    fi
 fi
 
 # ZIP name
-if [[ "$KSU_VERSION" == "none" ]]; then
+if [[ "$ROOT_SOLUTION" == "none" ]]; then
     ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${DEVICE}.zip"
 else
-    ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_KSU-Next-${KSU_VERSION}_${DEVICE}.zip"
+    ZIP_ROOT_NAME="${ROOT_SOLUTION//-/_}"
+    ZIP_ROOT_NAME="${ZIP_ROOT_NAME// /-}"
+    if [[ "$HAS_SUSFS" == true ]]; then
+        ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${ZIP_ROOT_NAME}-${ROOT_VERSION}_SUSFS_${DEVICE}.zip"
+    else
+        ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${ZIP_ROOT_NAME}-${ROOT_VERSION}_${DEVICE}.zip"
+    fi
 fi
 
 # ─── Sanity checks ────────────────────────────────────────────────────────────
@@ -158,9 +238,9 @@ check_dir  "${TEMPLATE_ZIP_DIR}/META-INF"         "Flashable zip META-INF dir"
 check_dir  "${KERNEL_ROOT}/firmware/tsp_stm"      "Firmware source dir"
 check_glob "${KERNEL_ROOT}/firmware/tsp_stm/fts5cu56a_a52sxq*" "TSP firmware file"
 
-# KernelSU-Next submodule (only on KSU branches)
-if [[ "$KSU_VERSION" != "none" ]]; then
-    check_dir "${KERNEL_ROOT}/KernelSU-Next"      "KernelSU-Next submodule"
+# Root solution submodule
+if [[ "$ROOT_SOLUTION" != "none" ]]; then
+    check_dir "$ROOT_SUBMODULE_DIR" "${ROOT_SOLUTION} submodule"
 fi
 
 # Kernel defconfig
